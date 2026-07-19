@@ -5,48 +5,34 @@ import com.teya.ledger.dtos.CreateTransactionResult;
 import com.teya.ledger.dtos.TransactionResponse;
 import com.teya.ledger.domain.Transaction;
 import com.teya.ledger.domain.TransactionType;
-import com.teya.ledger.exceptions.IdempotencyKeyMismatchException;
-import com.teya.ledger.exceptions.MissingIdempotencyKeyException;
 import com.teya.ledger.persistence.CacheRepository;
-import com.teya.ledger.persistence.IdempotencyRepository;
-import com.teya.ledger.persistence.IdempotentRequest;
+import com.teya.ledger.persistence.datamodels.IdempotencyDataModel;
 import com.teya.ledger.persistence.TransactionsRepository;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.util.List;
-import java.util.Optional;
 import java.util.UUID;
 
 @Service
 public class TransactionService {
     private final TransactionsRepository transactionsRepository;
     private final CacheRepository cacheRepository;
-    private final IdempotencyRepository idempotencyRepository;
+    private final IdempotencyService idempotencyService;
 
     public TransactionService(TransactionsRepository transactionsRepository,
                               CacheRepository cacheRepository,
-                              IdempotencyRepository idempotencyRepository) {
+                              IdempotencyService idempotencyService) {
         this.transactionsRepository = transactionsRepository;
         this.cacheRepository = cacheRepository;
-        this.idempotencyRepository = idempotencyRepository;
+        this.idempotencyService = idempotencyService;
     }
 
     public synchronized CreateTransactionResult createTransaction(final CreateTransactionCommand command) {
-        validateIdempotencyKey(command.idempotencyKey());
+        return idempotencyService.validateIdempotencyKey(command).orElseGet(() -> processNewTransaction(command));
+    }
 
-        final Optional<IdempotentRequest> existing = idempotencyRepository.findByKey(command.idempotencyKey());
-
-        if (existing.isPresent()) {
-            IdempotentRequest stored = existing.get();
-            if (!stored.command().equals(command)) {
-                throw new IdempotencyKeyMismatchException(
-                        "Idempotency key was already used for a different request payload"
-                );
-            }
-            return new CreateTransactionResult(stored.response(), true);
-        }
-
+    private CreateTransactionResult processNewTransaction(CreateTransactionCommand command) {
         final BigDecimal currentBalance = cacheRepository.getCurrentBalance();
         final BigDecimal amount = command.money().getAmount();
 
@@ -68,22 +54,13 @@ public class TransactionService {
         cacheRepository.setCurrentBalance(balanceAfter);
 
         final TransactionResponse response = toResponse(saved);
-        idempotencyRepository.save(
-                command.idempotencyKey(),
-                new IdempotentRequest(command, response)
-        );
+        idempotencyService.save(command.idempotencyKey(), new IdempotencyDataModel(command, response));
 
         return new CreateTransactionResult(response, false);
     }
 
     public List<Transaction> getAllTransactions() {
         return transactionsRepository.findAllSortedByTimestampDesc();
-    }
-
-    private static void validateIdempotencyKey(UUID idempotencyKey) {
-        if (idempotencyKey == null) {
-            throw new MissingIdempotencyKeyException("Idempotency-Key header is required");
-        }
     }
 
     private static TransactionResponse toResponse(Transaction transaction) {
