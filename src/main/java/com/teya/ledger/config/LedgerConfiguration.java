@@ -1,4 +1,4 @@
-package com.teya.ledger.configs;
+package com.teya.ledger.config;
 
 import com.teya.ledger.persistence.CacheRepository;
 import com.teya.ledger.persistence.InMemoryCacheRepository;

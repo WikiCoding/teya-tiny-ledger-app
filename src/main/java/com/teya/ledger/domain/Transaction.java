@@ -8,13 +8,13 @@ import java.util.Objects;
 import java.util.UUID;
 
 public class Transaction {
-    private UUID transactionId;
-    private UUID accountId;
-    private String description;
-    private Money money;
-    private TransactionType transactionType;
-    private Instant timestamp;
-    private BigDecimal balanceAfter;
+    private final UUID transactionId;
+    private final UUID accountId;
+    private final String description;
+    private final Money money;
+    private final TransactionType transactionType;
+    private final Instant timestamp;
+    private final BigDecimal balanceAfter;
 
     public Transaction(UUID transactionId,
                        UUID accountId,
@@ -94,6 +94,9 @@ public class Transaction {
         if (timestamp.isAfter(Instant.now())) {
             throw new IllegalArgumentException("Timestamp cannot be in the future");
         }
+        if (balanceAfter == null) {
+            throw new IllegalArgumentException("Balance after transaction cannot be null");
+        }
         if (balanceAfter.compareTo(BigDecimal.ZERO) < 0) {
             throw new InsufficientFundsException("Insufficient funds for withdrawal");
         }
@@ -114,5 +117,18 @@ public class Transaction {
     @Override
     public int hashCode() {
         return Objects.hash(transactionId, accountId, description, money, transactionType, timestamp, balanceAfter);
+    }
+
+    @Override
+    public String toString() {
+        return "Transaction{" +
+                "transactionId=" + transactionId +
+                ", accountId=" + accountId +
+                ", description='" + description + '\'' +
+                ", money=" + money +
+                ", transactionType=" + transactionType +
+                ", timestamp=" + timestamp +
+                ", balanceAfter=" + balanceAfter +
+                '}';
     }
 }

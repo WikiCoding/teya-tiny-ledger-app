@@ -19,7 +19,7 @@ src/
 └── main/
     ├── java/
     │   └── com.teya.ledger/
-    │       ├── configs/
+    │       ├── config/
     │       │   └── LedgerConfiguration.java
     │       ├── controllers/
     │       │   ├── BalancesController.java

@@ -15,11 +15,10 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.time.Instant;
 import java.util.List;
 
 @RestController
-@RequestMapping("api/v1/transactions")
+@RequestMapping("/api/v1/transactions")
 public class TransactionsController {
     private final TransactionService transactionService;
 
@@ -29,8 +28,6 @@ public class TransactionsController {
 
     @PostMapping
     public ResponseEntity<TransactionResponse> createTransaction(@RequestBody TransactionRequest transactionRequest) {
-        validateRequest(transactionRequest);
-
         Transaction transaction = transactionService.createTransaction(
                 new CreateTransactionCommand(
                         transactionRequest.transactionId(),
@@ -65,35 +62,5 @@ public class TransactionsController {
                         transaction.getTimestamp(),
                         transaction.getBalanceAfter()
                 )).toList());
-    }
-
-    private void validateRequest(TransactionRequest request) {
-        if (request == null) {
-            throw new IllegalArgumentException("Transaction request is required");
-        }
-        if (request.transactionId() == null) {
-            throw new IllegalArgumentException("Transaction ID cannot be null");
-        }
-        if (request.accountId() == null) {
-            throw new IllegalArgumentException("Account ID cannot be null");
-        }
-        if (request.description() == null || request.description().trim().isEmpty()) {
-            throw new IllegalArgumentException("Description is required");
-        }
-        if (request.description().trim().length() > 35) {
-            throw new IllegalArgumentException("Description cannot exceed 35 characters");
-        }
-        if (request.transactionType() == null) {
-            throw new IllegalArgumentException("Transaction type is required");
-        }
-        if (request.amount() == null || request.amount().signum() <= 0) {
-            throw new IllegalArgumentException("Amount must be bigger than zero");
-        }
-        if (request.timestamp() == null) {
-            throw new IllegalArgumentException("Timestamp cannot be null");
-        }
-        if (request.timestamp().isAfter(Instant.now())) {
-            throw new IllegalArgumentException("Timestamp cannot be in the future");
-        }
     }
 }

@@ -194,6 +194,17 @@ class TransactionTest {
                         BigDecimal.valueOf(-1),
                         InsufficientFundsException.class,
                         "Insufficient funds for withdrawal"
+                ),
+                Arguments.of(
+                        TRANSACTION_ID,
+                        ACCOUNT_ID,
+                        DESCRIPTION,
+                        MONEY,
+                        TRANSACTION_TYPE,
+                        TIMESTAMP,
+                        null,
+                        IllegalArgumentException.class,
+                        "Balance after transaction cannot be null"
                 )
         );
     }

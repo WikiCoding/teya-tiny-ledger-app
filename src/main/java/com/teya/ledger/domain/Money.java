@@ -20,7 +20,7 @@ public final class Money {
     }
 
     public BigDecimal getAmount() {
-        return amount;
+        return new BigDecimal(amount.unscaledValue(), amount.scale());
     }
 
     @Override
@@ -32,5 +32,12 @@ public final class Money {
     @Override
     public int hashCode() {
         return Objects.hashCode(amount);
+    }
+
+    @Override
+    public String toString() {
+        return "Money{" +
+                "amount=" + amount +
+                '}';
     }
 }
