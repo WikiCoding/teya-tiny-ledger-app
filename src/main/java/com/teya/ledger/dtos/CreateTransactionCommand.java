@@ -6,7 +6,7 @@ import com.teya.ledger.domain.Money;
 import java.time.Instant;
 import java.util.UUID;
 
-public record CreateTransactionCommand(UUID transactionId,
+public record CreateTransactionCommand(UUID idempotencyKey,
                                        UUID accountId,
                                        String description,
                                        TransactionType transactionType,

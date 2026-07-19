@@ -22,9 +22,13 @@ import java.time.Instant;
 import java.util.UUID;
 import java.util.stream.Stream;
 
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.DEFINED_PORT)
 @DirtiesContext(classMode = DirtiesContext.ClassMode.BEFORE_EACH_TEST_METHOD)
 public class LedgerEndToEndTest {
+
+    private static final String IDEMPOTENCY_HEADER = "Idempotency-Key";
 
     private WebTestClient webTestClient;
 
@@ -45,7 +49,6 @@ public class LedgerEndToEndTest {
     @Test
     void createTransaction_E2E_SavesToDatabaseAndReturns201() {
         // Arrange
-        UUID txnUuid = UUID.randomUUID();
         UUID accUuid = UUID.randomUUID();
         BigDecimal amount = new BigDecimal("150.00");
         Instant timestamp = Instant.parse("2025-07-15T16:24:00Z");
@@ -53,18 +56,19 @@ public class LedgerEndToEndTest {
         String transactionType = "DEPOSIT";
 
         TransactionRequest requestPayload = new TransactionRequest(
-                txnUuid, accUuid, description, transactionType, amount, timestamp
+                accUuid, description, transactionType, amount, timestamp
         );
 
         // Act & Assert
         webTestClient.post()
                 .uri("/api/v1/transactions")
+                .header(IDEMPOTENCY_HEADER, UUID.randomUUID().toString())
                 .contentType(MediaType.APPLICATION_JSON)
                 .bodyValue(requestPayload)
                 .exchange()
                 .expectStatus().isCreated()
                 .expectBody()
-                .jsonPath("$.transactionId").isEqualTo(txnUuid.toString())
+                .jsonPath("$.transactionId").isNotEmpty()
                 .jsonPath("$.accountId").isEqualTo(accUuid.toString())
                 .jsonPath("$.description").isEqualTo(description)
                 .jsonPath("$.transactionType").isEqualTo(transactionType)
@@ -77,7 +81,6 @@ public class LedgerEndToEndTest {
     @MethodSource("provideInvalidTransactionData")
     void createTransaction_WithInvalidData_Returns400BadRequest(
             String testCaseName,
-            UUID txnId,
             UUID accId,
             String description,
             String type,
@@ -85,11 +88,12 @@ public class LedgerEndToEndTest {
             Instant timestamp
     ) {
         // Arrange
-        TransactionRequest payload = new TransactionRequest(txnId, accId, description, type, amount, timestamp);
+        TransactionRequest payload = new TransactionRequest(accId, description, type, amount, timestamp);
 
         // Act & Assert
         webTestClient.post()
                 .uri("/api/v1/transactions")
+                .header(IDEMPOTENCY_HEADER, UUID.randomUUID().toString())
                 .contentType(MediaType.APPLICATION_JSON)
                 .bodyValue(payload)
                 .exchange()
@@ -99,65 +103,135 @@ public class LedgerEndToEndTest {
     private static Stream<Arguments> provideInvalidTransactionData() {
         UUID validUuid = UUID.randomUUID();
         return Stream.of(
-                // 1. Invalid TransactionId (null)
-                Arguments.of("Null TransactionId", null, validUuid, "Valid Desc", "DEPOSIT", BigDecimal.TEN, Instant.now()),
+                // 1. Invalid AccountId (null)
+                Arguments.of("Null AccountId", null, "Valid Desc", "DEPOSIT", BigDecimal.TEN, Instant.now()),
 
-                // 2. Invalid AccountId (null)
-                Arguments.of("Null AccountId", validUuid, null, "Valid Desc", "DEPOSIT", BigDecimal.TEN, Instant.now()),
+                // 2. Invalid Description (null, empty, too long)
+                Arguments.of("Null Description", validUuid, null, "DEPOSIT", BigDecimal.TEN, Instant.now()),
+                Arguments.of("Empty Description", validUuid, "   ", "DEPOSIT", BigDecimal.TEN, Instant.now()),
+                Arguments.of("Description Too Long", validUuid, "A".repeat(36), "DEPOSIT", BigDecimal.TEN, Instant.now()),
 
-                // 3. Invalid Description (null, empty, too long)
-                Arguments.of("Null Description", validUuid, validUuid, null, "DEPOSIT", BigDecimal.TEN, Instant.now()),
-                Arguments.of("Empty Description", validUuid, validUuid, "   ", "DEPOSIT", BigDecimal.TEN, Instant.now()),
-                Arguments.of("Description Too Long", validUuid, validUuid, "A".repeat(36), "DEPOSIT", BigDecimal.TEN, Instant.now()),
+                // 3. Invalid Amount (null, negative)
+                Arguments.of("Null Amount", validUuid, "Valid Desc", "DEPOSIT", null, Instant.now()),
+                Arguments.of("Negative Amount", validUuid, "Valid Desc", "DEPOSIT", new BigDecimal("-1.00"), Instant.now()),
 
-                // 4. Invalid Amount (null, negative)
-                Arguments.of("Null Amount", validUuid, validUuid, "Valid Desc", "DEPOSIT", null, Instant.now()),
-                Arguments.of("Negative Amount", validUuid, validUuid, "Valid Desc", "DEPOSIT", new BigDecimal("-1.00"), Instant.now()),
+                // 4. Invalid Timestamp (null, future)
+                Arguments.of("Null Timestamp", validUuid, "Valid Desc", "DEPOSIT", BigDecimal.TEN, null),
+                Arguments.of("Future Timestamp", validUuid, "Valid Desc", "DEPOSIT", BigDecimal.TEN, Instant.now().plusSeconds(3600)),
 
-                // 5. Invalid Timestamp (null, future)
-                Arguments.of("Null Timestamp", validUuid, validUuid, "Valid Desc", "DEPOSIT", BigDecimal.TEN, null),
-                Arguments.of("Future Timestamp", validUuid, validUuid, "Valid Desc", "DEPOSIT", BigDecimal.TEN, Instant.now().plusSeconds(3600)),
-
-                // 6. Invalid TransactionType string
-                Arguments.of("Invalid TransactionType", validUuid, validUuid, "Valid Desc", "NOT_A_TYPE", BigDecimal.TEN, Instant.now())
+                // 5. Invalid TransactionType string
+                Arguments.of("Invalid TransactionType", validUuid, "Valid Desc", "NOT_A_TYPE", BigDecimal.TEN, Instant.now())
         );
     }
 
     @Test
-    void createTransaction_WhenTransactionIdAlreadyExists_Returns409Conflict() {
+    void createTransaction_WhenIdempotencyKeyHeaderIsMissing_Returns400BadRequest() {
         // Arrange
-        UUID txnUuid = UUID.randomUUID();
-
-        CreateTransactionCommand existingTransaction = new CreateTransactionCommand(
-                txnUuid,
-                UUID.randomUUID(),
-                "Initial",
-                TransactionType.DEPOSIT,
-                new Money(BigDecimal.TEN),
-                Instant.now()
+        TransactionRequest payload = new TransactionRequest(
+                UUID.randomUUID(), "Salary", "DEPOSIT", BigDecimal.TEN, Instant.now()
         );
 
-        transactionService.createTransaction(existingTransaction);
-
-        // Act
-        TransactionRequest duplicatePayload = new TransactionRequest(
-                txnUuid, UUID.randomUUID(), "Duplicate Txn", "DEPOSIT", BigDecimal.TEN, Instant.now()
-        );
-
-        // Assert
+        // Act & Assert (no Idempotency-Key header sent)
         webTestClient.post()
                 .uri("/api/v1/transactions")
                 .contentType(MediaType.APPLICATION_JSON)
-                .bodyValue(duplicatePayload)
+                .bodyValue(payload)
                 .exchange()
-                .expectStatus().isEqualTo(409); // Conflict
+                .expectStatus().isBadRequest();
+    }
+
+    @Test
+    void createTransaction_WhenSameIdempotencyKeyAndMatchingPayload_ReplaysOriginalResponseWith200Ok() {
+        // Arrange
+        UUID accUuid = UUID.randomUUID();
+        BigDecimal amount = new BigDecimal("150.00");
+        Instant timestamp = Instant.parse("2025-07-15T16:24:00Z");
+        String description = "Salary";
+        String transactionType = "DEPOSIT";
+        UUID idempotencyKey = UUID.randomUUID();
+
+        TransactionRequest payload = new TransactionRequest(
+                accUuid, description, transactionType, amount, timestamp
+        );
+
+        // Act & Assert
+        byte[] firstResponseBody = webTestClient.post()
+                .uri("/api/v1/transactions")
+                .header(IDEMPOTENCY_HEADER, String.valueOf(idempotencyKey))
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(payload)
+                .exchange()
+                .expectStatus().isCreated()
+                .expectBody()
+                .jsonPath("$.transactionId").isNotEmpty()
+                .returnResult()
+                .getResponseBodyContent();
+
+        webTestClient.post()
+                .uri("/api/v1/transactions")
+                .header(IDEMPOTENCY_HEADER, String.valueOf(idempotencyKey))
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(payload)
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.transactionId").isNotEmpty()
+                .jsonPath("$.accountId").isEqualTo(accUuid.toString())
+                .jsonPath("$.description").isEqualTo(description)
+                .jsonPath("$.transactionType").isEqualTo(transactionType)
+                .jsonPath("$.amount").isEqualTo(150.00)
+                .jsonPath("$.timestamp").isEqualTo("2025-07-15T16:24:00Z")
+                .jsonPath("$.balanceAfter").isEqualTo(150.00);
+
+        // The history must contain exactly one transaction (no duplicate writes)
+        webTestClient.get()
+                .uri("/api/v1/transactions")
+                .accept(MediaType.APPLICATION_JSON)
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.length()").isEqualTo(1);
+
+        assertNotNull(firstResponseBody);
+    }
+
+    @Test
+    void createTransaction_WhenSameIdempotencyKeyButDifferentPayload_Returns422UnprocessableEntity() {
+        // Arrange
+        UUID accUuid = UUID.randomUUID();
+        String idempotencyKey = "ae6f8799-c820-425e-971a-a46b56a2cd70";
+
+        TransactionRequest originalPayload = new TransactionRequest(
+                accUuid, "Salary", "DEPOSIT", new BigDecimal("100.00"), Instant.parse("2025-07-15T16:24:00Z")
+        );
+
+        TransactionRequest conflictingPayload = new TransactionRequest(
+                accUuid, "ATM", "WITHDRAWAL", new BigDecimal("50.00"), Instant.parse("2025-07-15T16:24:00Z")
+        );
+
+        // First call succeeds
+        webTestClient.post()
+                .uri("/api/v1/transactions")
+                .header(IDEMPOTENCY_HEADER, idempotencyKey)
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(originalPayload)
+                .exchange()
+                .expectStatus().isCreated();
+
+        // Act & Assert — same key but different payload must be rejected
+        webTestClient.post()
+                .uri("/api/v1/transactions")
+                .header(IDEMPOTENCY_HEADER, idempotencyKey)
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(conflictingPayload)
+                .exchange()
+                .expectStatus().isEqualTo(HttpStatus.UNPROCESSABLE_CONTENT);
     }
 
     @Test
     void createTransaction_WhenWithdrawalExceedsCurrentBalance_Returns422UnprocessableEntity() {
         // Arrange
         TransactionRequest expensivePayload = new TransactionRequest(
-                UUID.randomUUID(),
                 UUID.randomUUID(),
                 "Expensive Dinner",
                 "WITHDRAWAL",
@@ -168,6 +242,7 @@ public class LedgerEndToEndTest {
         // Act & Assert
         webTestClient.post()
                 .uri("/api/v1/transactions")
+                .header(IDEMPOTENCY_HEADER, UUID.randomUUID().toString())
                 .contentType(MediaType.APPLICATION_JSON)
                 .bodyValue(expensivePayload)
                 .exchange()
@@ -181,12 +256,11 @@ public class LedgerEndToEndTest {
     @Test
     void getAllTransactions_ReturnsListOfTransactionsAnd200Ok() {
         // Arrange
-        UUID txnUuid = UUID.randomUUID();
         UUID accUuid = UUID.randomUUID();
         Instant timestamp = Instant.parse("2025-07-15T16:00:00Z");
 
         CreateTransactionCommand transaction = new CreateTransactionCommand(
-                txnUuid,
+                UUID.randomUUID(),
                 accUuid,
                 "Salary Payment",
                 TransactionType.DEPOSIT,
@@ -204,7 +278,7 @@ public class LedgerEndToEndTest {
                 .expectStatus().isOk()
                 .expectBody()
                 .jsonPath("$.length()").isEqualTo(1)
-                .jsonPath("$[0].transactionId").isEqualTo(txnUuid.toString())
+                .jsonPath("$[0].transactionId").isNotEmpty()
                 .jsonPath("$[0].accountId").isEqualTo(accUuid.toString())
                 .jsonPath("$[0].description").isEqualTo("Salary Payment")
                 .jsonPath("$[0].transactionType").isEqualTo("DEPOSIT")

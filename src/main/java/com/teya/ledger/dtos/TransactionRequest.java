@@ -4,8 +4,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
 
-public record TransactionRequest(UUID transactionId,
-                                 UUID accountId,
+public record TransactionRequest(UUID accountId,
                                  String description,
                                  String transactionType,
                                  BigDecimal amount,

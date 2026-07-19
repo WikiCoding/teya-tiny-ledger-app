@@ -1,6 +1,7 @@
 package com.teya.ledger.domain;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.Objects;
 
 public final class Money {
@@ -16,7 +17,7 @@ public final class Money {
             throw new IllegalArgumentException("Amount cannot be negative or zero");
         }
 
-        this.amount = amount;
+        this.amount = amount.setScale(2, RoundingMode.HALF_UP);
     }
 
     public BigDecimal getAmount() {

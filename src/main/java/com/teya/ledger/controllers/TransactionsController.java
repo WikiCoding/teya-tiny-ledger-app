@@ -1,6 +1,6 @@
 package com.teya.ledger.controllers;
 
-import com.teya.ledger.domain.Transaction;
+import com.teya.ledger.dtos.CreateTransactionResult;
 import com.teya.ledger.dtos.CreateTransactionCommand;
 import com.teya.ledger.dtos.TransactionRequest;
 import com.teya.ledger.dtos.TransactionResponse;
@@ -12,10 +12,12 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/v1/transactions")
@@ -27,10 +29,12 @@ public class TransactionsController {
     }
 
     @PostMapping
-    public ResponseEntity<TransactionResponse> createTransaction(@RequestBody TransactionRequest transactionRequest) {
-        Transaction transaction = transactionService.createTransaction(
+    public ResponseEntity<TransactionResponse> createTransaction(
+            @RequestHeader(value = "Idempotency-Key", required = false) UUID idempotencyKey,
+            @RequestBody TransactionRequest transactionRequest) {
+        CreateTransactionResult result = transactionService.createTransaction(
                 new CreateTransactionCommand(
-                        transactionRequest.transactionId(),
+                        idempotencyKey,
                         transactionRequest.accountId(),
                         transactionRequest.description(),
                         TransactionType.valueOf(transactionRequest.transactionType().trim().toUpperCase()),
@@ -39,15 +43,7 @@ public class TransactionsController {
                 )
         );
 
-        return ResponseEntity.status(HttpStatus.CREATED).body(new TransactionResponse(
-                transaction.getTransactionId(),
-                transaction.getAccountId(),
-                transaction.getDescription(),
-                transaction.getTransactionType().toString(),
-                transaction.getMoney().getAmount(),
-                transaction.getTimestamp(),
-                transaction.getBalanceAfter()
-        ));
+        return ResponseEntity.status(result.replayed() ? HttpStatus.OK : HttpStatus.CREATED).body(result.response());
     }
 
     @GetMapping

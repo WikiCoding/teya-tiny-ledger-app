@@ -3,10 +3,16 @@ package com.teya.ledger.services;
 import com.teya.ledger.domain.Money;
 import com.teya.ledger.domain.Transaction;
 import com.teya.ledger.domain.TransactionType;
-import com.teya.ledger.persistence.CacheRepository;
-import com.teya.ledger.persistence.TransactionsRepository;
 import com.teya.ledger.dtos.CreateTransactionCommand;
+import com.teya.ledger.dtos.CreateTransactionResult;
+import com.teya.ledger.dtos.TransactionResponse;
+import com.teya.ledger.exceptions.IdempotencyKeyMismatchException;
 import com.teya.ledger.exceptions.InsufficientFundsException;
+import com.teya.ledger.exceptions.MissingIdempotencyKeyException;
+import com.teya.ledger.persistence.CacheRepository;
+import com.teya.ledger.persistence.IdempotencyRepository;
+import com.teya.ledger.persistence.IdempotentRequest;
+import com.teya.ledger.persistence.TransactionsRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -14,44 +20,48 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class TransactionServiceTest {
 
     private TransactionsRepository transactionsRepository;
     private CacheRepository cacheRepository;
+    private IdempotencyRepository idempotencyRepository;
     private TransactionService transactionService;
 
     @BeforeEach
     void setUp() {
         transactionsRepository = mock(TransactionsRepository.class);
         cacheRepository = mock(CacheRepository.class);
-        transactionService = new TransactionService(transactionsRepository, cacheRepository);
+        idempotencyRepository = mock(IdempotencyRepository.class);
+        transactionService = new TransactionService(transactionsRepository, cacheRepository, idempotencyRepository);
     }
 
     @Test
     void createTransaction_WithdrawalResultingInZeroBalance_SuccessfullyCreatesTransaction() {
         // Arrange
-        UUID txnId1 = UUID.fromString("11111111-1111-1111-1111-111111111111");
-        UUID txnId2 = UUID.fromString("22222222-2222-2222-2222-222222222222");
         UUID accId = UUID.fromString("99999999-9999-9999-9999-999999999999");
         String withdrawalDesc = "Withdrawal bringing balance to 0";
-        String depositDesc = "Initial Deposit";
         Money moneyTen = new Money(new BigDecimal("10.00"));
         Instant timestamp = Instant.ofEpochMilli(1700000000000L);
-        BigDecimal balanceAfter = new BigDecimal("10.00");
+        UUID idempotencyKey = UUID.randomUUID();
 
         CreateTransactionCommand command = new CreateTransactionCommand(
-                txnId1,
+                idempotencyKey,
                 accId,
                 withdrawalDesc,
                 TransactionType.WITHDRAWAL,
@@ -59,54 +69,39 @@ class TransactionServiceTest {
                 timestamp
         );
 
-        Transaction existingDeposit = new Transaction(
-                txnId2,
-                accId,
-                depositDesc,
-                moneyTen,
-                TransactionType.DEPOSIT,
-                timestamp,
-                balanceAfter
-        );
-
-        Transaction expectedSavedTransaction = new Transaction(
-                command.transactionId(),
-                command.accountId(),
-                command.description(),
-                command.money(),
-                command.transactionType(),
-                command.timestamp(),
-                new BigDecimal("0.00")
-        );
-
         when(cacheRepository.getCurrentBalance()).thenReturn(new BigDecimal("10.00"));
-        when(transactionsRepository.findAllSortedByTimestampDesc()).thenReturn(List.of(existingDeposit));
-
-        TransactionService service = new TransactionService(transactionsRepository, cacheRepository);
-
-        when(transactionsRepository.save(expectedSavedTransaction)).thenReturn(expectedSavedTransaction);
+        when(transactionsRepository.save(any(Transaction.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         // Act
-        Transaction actualResult = service.createTransaction(command);
+        CreateTransactionResult result = transactionService.createTransaction(command);
 
         // Assert
-        assertNotNull(actualResult);
-        assertEquals(expectedSavedTransaction, actualResult);
-        verify(transactionsRepository).save(expectedSavedTransaction);
+        assertNotNull(result);
+        assertFalse(result.replayed());
+        TransactionResponse response = result.response();
+        assertNotNull(response.transactionId());
+        assertEquals(accId, response.accountId());
+        assertEquals(withdrawalDesc, response.description());
+        assertEquals(TransactionType.WITHDRAWAL.name(), response.transactionType());
+        assertEquals(new BigDecimal("10.00"), response.amount());
+        assertEquals(timestamp, response.timestamp());
+        assertEquals(new BigDecimal("0.00"), response.balanceAfter());
+
+        verify(cacheRepository).setCurrentBalance(new BigDecimal("0.00"));
+        verify(idempotencyRepository).save(eq(idempotencyKey), any(IdempotentRequest.class));
     }
 
     @Test
     void createTransaction_WithdrawalResultingInNegativeBalance_ThrowsInsufficientFundsException() {
         // Arrange
-        UUID txnId = UUID.fromString("11111111-1111-1111-1111-111111111111");
         UUID accId = UUID.fromString("99999999-9999-9999-9999-999999999999");
-
         String description = "Rent";
         Money moneyZeroPointOne = new Money(new BigDecimal("0.10"));
         Instant timestamp = Instant.ofEpochMilli(1700000000000L);
+        UUID idempotencyKey = UUID.randomUUID();
 
         CreateTransactionCommand command = new CreateTransactionCommand(
-                txnId,
+                idempotencyKey,
                 accId,
                 description,
                 TransactionType.WITHDRAWAL,
@@ -124,20 +119,21 @@ class TransactionServiceTest {
         );
 
         assertEquals("Insufficient funds for withdrawal", exception.getMessage());
-        verify(transactionsRepository, never()).save(null);
+        verify(transactionsRepository, never()).save(any(Transaction.class));
+        verify(idempotencyRepository, never()).save(any(UUID.class), any(IdempotentRequest.class));
     }
 
     @Test
     void createTransaction_DepositTransaction_SuccessfullyCreatesTransaction() {
         // Arrange
-        UUID txnId = UUID.fromString("11111111-1111-1111-1111-111111111111");
         UUID accId = UUID.fromString("99999999-9999-9999-9999-999999999999");
         String description = "Simple Deposit";
         Money moneyTen = new Money(new BigDecimal("10.00"));
         Instant timestamp = Instant.ofEpochMilli(1700000000000L);
+        UUID idempotencyKey = UUID.randomUUID();
 
         CreateTransactionCommand command = new CreateTransactionCommand(
-                txnId,
+                idempotencyKey,
                 accId,
                 description,
                 TransactionType.DEPOSIT,
@@ -145,26 +141,141 @@ class TransactionServiceTest {
                 timestamp
         );
 
-        Transaction expectedSavedTransaction = new Transaction(
-                command.transactionId(),
-                command.accountId(),
-                command.description(),
-                command.money(),
-                command.transactionType(),
-                command.timestamp(),
-                new BigDecimal("10.00")
-        );
-
         when(cacheRepository.getCurrentBalance()).thenReturn(BigDecimal.ZERO);
-        when(transactionsRepository.save(expectedSavedTransaction)).thenReturn(expectedSavedTransaction);
+        when(transactionsRepository.save(any(Transaction.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         // Act
-        Transaction actualResult = transactionService.createTransaction(command);
+        CreateTransactionResult result = transactionService.createTransaction(command);
 
         // Assert
-        assertNotNull(actualResult);
-        assertEquals(expectedSavedTransaction, actualResult);
-        verify(transactionsRepository).save(expectedSavedTransaction);
+        assertNotNull(result);
+        assertFalse(result.replayed());
+        assertEquals(new BigDecimal("10.00"), result.response().balanceAfter());
+        verify(transactionsRepository).save(any(Transaction.class));
+        verify(idempotencyRepository).save(eq(idempotencyKey), any(IdempotentRequest.class));
+    }
+
+    @Test
+    void createTransaction_WithNullIdempotencyKey_ThrowsMissingIdempotencyKeyException() {
+        // Arrange
+        CreateTransactionCommand command = new CreateTransactionCommand(
+                null,
+                UUID.randomUUID(),
+                "Deposit",
+                TransactionType.DEPOSIT,
+                new Money(new BigDecimal("10.00")),
+                Instant.now()
+        );
+
+        // Act & Assert
+        assertThrows(MissingIdempotencyKeyException.class, () -> transactionService.createTransaction(command));
+        verify(transactionsRepository, never()).save(any(Transaction.class));
+    }
+
+    @Test
+    void createTransaction_WhenSameKeyAndMatchingPayload_ReplaysOriginalResponseAndDoesNotWriteAgain() {
+        // Arrange
+        UUID accId = UUID.fromString("99999999-9999-9999-9999-999999999999");
+        String description = "Salary";
+        Money moneyHundred = new Money(new BigDecimal("100.00"));
+        Instant timestamp = Instant.ofEpochMilli(1700000000000L);
+        UUID idempotencyKey = UUID.randomUUID();
+
+        CreateTransactionCommand command = new CreateTransactionCommand(
+                idempotencyKey,
+                accId,
+                description,
+                TransactionType.DEPOSIT,
+                moneyHundred,
+                timestamp
+        );
+
+        TransactionResponse originalResponse = new TransactionResponse(
+                idempotencyKey,
+                accId,
+                description,
+                TransactionType.DEPOSIT.name(),
+                new BigDecimal("100.00"),
+                timestamp,
+                new BigDecimal("100.00")
+        );
+
+        when(idempotencyRepository.findByKey(idempotencyKey)).thenReturn(
+                Optional.of(new IdempotentRequest(command, originalResponse))
+        );
+
+        // Act
+        CreateTransactionResult result = transactionService.createTransaction(command);
+
+        // Assert
+        assertTrue(result.replayed());
+        assertEquals(originalResponse, result.response());
+        verify(transactionsRepository, never()).save(any(Transaction.class));
+        verify(cacheRepository, never()).setCurrentBalance(any(BigDecimal.class));
+    }
+
+    @Test
+    void createTransaction_WhenSameKeyButDifferentPayload_ThrowsIdempotencyKeyMismatchException() {
+        // Arrange
+        UUID accId = UUID.fromString("99999999-9999-9999-9999-999999999999");
+        Instant timestamp = Instant.ofEpochMilli(1700000000000L);
+        UUID idempotencyKey = UUID.randomUUID();
+
+        // Stored entry was for a DEPOSIT of 100.
+        CreateTransactionCommand storedCommand = new CreateTransactionCommand(
+                idempotencyKey, accId, "Salary", TransactionType.DEPOSIT,
+                new Money(new BigDecimal("100.00")), timestamp
+        );
+        TransactionResponse storedResponse = new TransactionResponse(
+                UUID.randomUUID(), accId, "Salary", TransactionType.DEPOSIT.name(),
+                new BigDecimal("100.00"), timestamp, new BigDecimal("100.00")
+        );
+
+        when(idempotencyRepository.findByKey(idempotencyKey)).thenReturn(
+                Optional.of(new IdempotentRequest(storedCommand, storedResponse))
+        );
+
+        // New request reuses the key but for a WITHDRAWAL of 50 (different payload).
+        CreateTransactionCommand conflictingCommand = new CreateTransactionCommand(
+                idempotencyKey,
+                accId,
+                "ATM",
+                TransactionType.WITHDRAWAL,
+                new Money(new BigDecimal("50.00")),
+                timestamp
+        );
+
+        // Act & Assert
+        assertThrows(IdempotencyKeyMismatchException.class,
+                () -> transactionService.createTransaction(conflictingCommand));
+
+        verify(transactionsRepository, never()).save(any(Transaction.class));
+        verify(idempotencyRepository, never()).save(any(UUID.class), any(IdempotentRequest.class));
+    }
+
+    @Test
+    void createTransaction_GeneratesNewTransactionIdForEachFreshRequest() {
+        // Arrange
+        UUID accId = UUID.randomUUID();
+        Money money = new Money(new BigDecimal("10.00"));
+        Instant timestamp = Instant.now();
+
+        when(cacheRepository.getCurrentBalance()).thenReturn(BigDecimal.ZERO);
+        when(transactionsRepository.save(any(Transaction.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        CreateTransactionCommand first = new CreateTransactionCommand(
+                UUID.fromString("ae6f8799-c820-425e-971a-a46b56a2cd71"), accId, "First", TransactionType.DEPOSIT, money, timestamp
+        );
+        CreateTransactionCommand second = new CreateTransactionCommand(
+                UUID.fromString("ae6f8799-c820-425e-971a-a46b56a2cd71"), accId, "Second", TransactionType.DEPOSIT, money, timestamp
+        );
+
+        // Act
+        CreateTransactionResult firstResult = transactionService.createTransaction(first);
+        CreateTransactionResult secondResult = transactionService.createTransaction(second);
+
+        // Assert
+        assertNotEquals(firstResult.response().transactionId(), secondResult.response().transactionId());
     }
 
     @Test

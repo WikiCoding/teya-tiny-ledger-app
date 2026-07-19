@@ -20,6 +20,16 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(new ErrorDto(ex.getMessage(), Instant.now()));
     }
 
+    @ExceptionHandler(value = MissingIdempotencyKeyException.class)
+    public ResponseEntity<ErrorDto> handleMissingIdempotencyKey(MissingIdempotencyKeyException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new ErrorDto(ex.getMessage(), Instant.now()));
+    }
+
+    @ExceptionHandler(value = IdempotencyKeyMismatchException.class)
+    public ResponseEntity<ErrorDto> handleIdempotencyKeyMismatch(IdempotencyKeyMismatchException ex) {
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_CONTENT).body(new ErrorDto(ex.getMessage(), Instant.now()));
+    }
+
     @ExceptionHandler(value = IllegalArgumentException.class)
     public ResponseEntity<ErrorDto> handleIllegalArgumentException(IllegalArgumentException ex) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new ErrorDto(ex.getMessage(), Instant.now()));
