@@ -2,6 +2,7 @@ package com.teya.ledger.services;
 
 import com.teya.ledger.dtos.CreateTransactionCommand;
 import com.teya.ledger.dtos.CreateTransactionResult;
+import com.teya.ledger.exceptions.DuplicateTransactionException;
 import com.teya.ledger.exceptions.IdempotencyKeyMismatchException;
 import com.teya.ledger.exceptions.MissingIdempotencyKeyException;
 import com.teya.ledger.persistence.IdempotencyRepository;
@@ -19,25 +20,30 @@ public class IdempotencyService {
         this.idempotencyRepository = idempotencyRepository;
     }
 
-    public Optional<CreateTransactionResult> validateIdempotencyKey(CreateTransactionCommand command) {
+    public Optional<CreateTransactionResult> reserveOrGetExistingResult(CreateTransactionCommand command) {
         UUID idempotencyKey = command.idempotencyKey();
         if (idempotencyKey == null) {
             throw new MissingIdempotencyKeyException("Idempotency-Key header is required");
         }
 
-        final Optional<IdempotencyDataModel> existingIdempotentRequest = idempotencyRepository.findByKey(idempotencyKey);
+        Optional<IdempotencyDataModel> alreadyReserved = idempotencyRepository.reserve(idempotencyKey,
+                new IdempotencyDataModel(command, null));
 
-        if (existingIdempotentRequest.isPresent()) {
-            IdempotencyDataModel idempotencyDataModel = existingIdempotentRequest.get();
-            if (!idempotencyDataModel.command().equals(command)) {
-                throw new IdempotencyKeyMismatchException(
-                        "Idempotency key was already used for a different request payload"
-                );
-            }
-            return Optional.of(new CreateTransactionResult(idempotencyDataModel.response(), true));
+        if (alreadyReserved.isEmpty()) {
+            return Optional.empty();
         }
 
-        return Optional.empty();
+        IdempotencyDataModel idempotencyDataModel = alreadyReserved.get();
+        if (!idempotencyDataModel.command().equals(command)) {
+            throw new IdempotencyKeyMismatchException("Idempotency key was already used for a different request payload");
+        }
+
+        if (idempotencyDataModel.response() == null) {
+            throw new DuplicateTransactionException("This idempotency key was previously used and cannot be reused");
+        }
+
+        boolean isReplayed = true;
+        return Optional.of(new CreateTransactionResult(idempotencyDataModel.response(), isReplayed));
     }
 
     public void save(UUID idempotencyKey, IdempotencyDataModel idempotencyDataModel) {

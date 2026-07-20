@@ -47,11 +47,11 @@ class IdempotencyServiceTest {
         // Act & Assert
         MissingIdempotencyKeyException exception = assertThrows(
                 MissingIdempotencyKeyException.class,
-                () -> idempotencyService.validateIdempotencyKey(commandWithNullKey)
+                () -> idempotencyService.reserveOrGetExistingResult(commandWithNullKey)
         );
 
         assertEquals("Idempotency-Key header is required", exception.getMessage());
-        verify(idempotencyRepository, never()).findByKey(any());
+        verify(idempotencyRepository, never()).reserve(any(), any());
     }
 
     @Test
@@ -63,14 +63,14 @@ class IdempotencyServiceTest {
                 new Money(new BigDecimal("10.00")), Instant.now()
         );
 
-        when(idempotencyRepository.findByKey(key)).thenReturn(Optional.empty());
+        when(idempotencyRepository.reserve(key, new IdempotencyDataModel(command, null))).thenReturn(Optional.empty());
 
         // Act
-        Optional<CreateTransactionResult> result = idempotencyService.validateIdempotencyKey(command);
+        Optional<CreateTransactionResult> result = idempotencyService.reserveOrGetExistingResult(command);
 
         // Assert
         assertTrue(result.isEmpty());
-        verify(idempotencyRepository).findByKey(key);
+        verify(idempotencyRepository).reserve(key, new IdempotencyDataModel(command, null));
     }
 
     @Test
@@ -92,10 +92,10 @@ class IdempotencyServiceTest {
 
         IdempotencyDataModel storedRequest = new IdempotencyDataModel(command, storedResponse);
 
-        when(idempotencyRepository.findByKey(key)).thenReturn(Optional.of(storedRequest));
+        when(idempotencyRepository.reserve(key, new IdempotencyDataModel(command, null))).thenReturn(Optional.of(storedRequest));
 
         // Act
-        Optional<CreateTransactionResult> result = idempotencyService.validateIdempotencyKey(command);
+        Optional<CreateTransactionResult> result = idempotencyService.reserveOrGetExistingResult(command);
 
         // Assert
         assertTrue(result.isPresent());
@@ -126,12 +126,12 @@ class IdempotencyServiceTest {
                 new Money(new BigDecimal("50.00")), timestamp
         );
 
-        when(idempotencyRepository.findByKey(key)).thenReturn(Optional.of(storedRequest));
+        when(idempotencyRepository.reserve(key, new IdempotencyDataModel(conflictingCommand, null))).thenReturn(Optional.of(storedRequest));
 
         // Act & Assert
         IdempotencyKeyMismatchException exception = assertThrows(
                 IdempotencyKeyMismatchException.class,
-                () -> idempotencyService.validateIdempotencyKey(conflictingCommand)
+                () -> idempotencyService.reserveOrGetExistingResult(conflictingCommand)
         );
 
         assertEquals("Idempotency key was already used for a different request payload", exception.getMessage());

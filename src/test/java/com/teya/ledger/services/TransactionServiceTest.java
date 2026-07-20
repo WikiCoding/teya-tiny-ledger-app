@@ -64,7 +64,7 @@ class TransactionServiceTest {
         );
 
         // Mock idempotency service to indicate this is a NEW request
-        when(idempotencyService.validateIdempotencyKey(command)).thenReturn(Optional.empty());
+        when(idempotencyService.reserveOrGetExistingResult(command)).thenReturn(Optional.empty());
         when(cacheRepository.getCurrentBalance()).thenReturn(new BigDecimal("10.00"));
         when(transactionsRepository.save(any(Transaction.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -100,7 +100,7 @@ class TransactionServiceTest {
                 idempotencyKey, accId, description, TransactionType.WITHDRAWAL, moneyZeroPointOne, timestamp
         );
 
-        when(idempotencyService.validateIdempotencyKey(command)).thenReturn(Optional.empty());
+        when(idempotencyService.reserveOrGetExistingResult(command)).thenReturn(Optional.empty());
         when(cacheRepository.getCurrentBalance()).thenReturn(BigDecimal.ZERO);
 
         // Act & Assert
@@ -127,7 +127,7 @@ class TransactionServiceTest {
                 idempotencyKey, accId, description, TransactionType.DEPOSIT, moneyTen, timestamp
         );
 
-        when(idempotencyService.validateIdempotencyKey(command)).thenReturn(Optional.empty());
+        when(idempotencyService.reserveOrGetExistingResult(command)).thenReturn(Optional.empty());
         when(cacheRepository.getCurrentBalance()).thenReturn(BigDecimal.ZERO);
         when(transactionsRepository.save(any(Transaction.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -150,8 +150,7 @@ class TransactionServiceTest {
                 new Money(new BigDecimal("10.00")), Instant.now()
         );
 
-        // Because TransactionService delegates to IdempotencyService, we mock the exception throw
-        when(idempotencyService.validateIdempotencyKey(command))
+        when(idempotencyService.reserveOrGetExistingResult(command))
                 .thenThrow(new MissingIdempotencyKeyException("Idempotency-Key header is required"));
 
         // Act & Assert
@@ -179,8 +178,7 @@ class TransactionServiceTest {
 
         CreateTransactionResult replayedResult = new CreateTransactionResult(originalResponse, true);
 
-        // Mock idempotency service returning an EXISTING result
-        when(idempotencyService.validateIdempotencyKey(command)).thenReturn(Optional.of(replayedResult));
+        when(idempotencyService.reserveOrGetExistingResult(command)).thenReturn(Optional.of(replayedResult));
 
         // Act
         CreateTransactionResult result = transactionService.createTransaction(command);
@@ -205,8 +203,7 @@ class TransactionServiceTest {
                 new Money(new BigDecimal("50.00")), timestamp
         );
 
-        // Mock idempotency service throwing the mismatch exception
-        when(idempotencyService.validateIdempotencyKey(conflictingCommand))
+        when(idempotencyService.reserveOrGetExistingResult(conflictingCommand))
                 .thenThrow(new IdempotencyKeyMismatchException("Idempotency key was already used for a different request payload"));
 
         // Act & Assert
@@ -227,8 +224,6 @@ class TransactionServiceTest {
         when(cacheRepository.getCurrentBalance()).thenReturn(BigDecimal.ZERO);
         when(transactionsRepository.save(any(Transaction.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-        // FIXED: Different requests must have different idempotency keys!
-        // If they have the same key, they are considered retries of the same request.
         CreateTransactionCommand first = new CreateTransactionCommand(
                 UUID.randomUUID(), accId, "First", TransactionType.DEPOSIT, money, timestamp
         );
@@ -236,8 +231,8 @@ class TransactionServiceTest {
                 UUID.randomUUID(), accId, "Second", TransactionType.DEPOSIT, money, timestamp
         );
 
-        when(idempotencyService.validateIdempotencyKey(first)).thenReturn(Optional.empty());
-        when(idempotencyService.validateIdempotencyKey(second)).thenReturn(Optional.empty());
+        when(idempotencyService.reserveOrGetExistingResult(first)).thenReturn(Optional.empty());
+        when(idempotencyService.reserveOrGetExistingResult(second)).thenReturn(Optional.empty());
 
         // Act
         CreateTransactionResult firstResult = transactionService.createTransaction(first);

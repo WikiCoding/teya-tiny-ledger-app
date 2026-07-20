@@ -15,8 +15,9 @@ public class InMemoryIdempotencyRepository implements IdempotencyRepository {
     }
 
     @Override
-    public Optional<IdempotencyDataModel> findByKey(UUID idempotencyKey) {
-        return Optional.ofNullable(requestsByKey.get(idempotencyKey));
+    public Optional<IdempotencyDataModel> reserve(UUID idempotencyKey, IdempotencyDataModel placeholderRequest) {
+        IdempotencyDataModel existing = requestsByKey.putIfAbsent(idempotencyKey, placeholderRequest);
+        return Optional.ofNullable(existing);
     }
 
     @Override

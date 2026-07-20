@@ -1,13 +1,13 @@
 package com.teya.ledger.services;
 
+import com.teya.ledger.domain.Transaction;
+import com.teya.ledger.domain.TransactionType;
 import com.teya.ledger.dtos.CreateTransactionCommand;
 import com.teya.ledger.dtos.CreateTransactionResult;
 import com.teya.ledger.dtos.TransactionResponse;
-import com.teya.ledger.domain.Transaction;
-import com.teya.ledger.domain.TransactionType;
 import com.teya.ledger.persistence.CacheRepository;
-import com.teya.ledger.persistence.datamodels.IdempotencyDataModel;
 import com.teya.ledger.persistence.TransactionsRepository;
+import com.teya.ledger.persistence.datamodels.IdempotencyDataModel;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -29,7 +29,7 @@ public class TransactionService {
     }
 
     public synchronized CreateTransactionResult createTransaction(final CreateTransactionCommand command) {
-        return idempotencyService.validateIdempotencyKey(command).orElseGet(() -> processNewTransaction(command));
+        return idempotencyService.reserveOrGetExistingResult(command).orElseGet(() -> processNewTransaction(command));
     }
 
     private CreateTransactionResult processNewTransaction(CreateTransactionCommand command) {
@@ -56,7 +56,8 @@ public class TransactionService {
         final TransactionResponse response = toResponse(saved);
         idempotencyService.save(command.idempotencyKey(), new IdempotencyDataModel(command, response));
 
-        return new CreateTransactionResult(response, false);
+        boolean isNotReplayed = false;
+        return new CreateTransactionResult(response, isNotReplayed);
     }
 
     public List<Transaction> getAllTransactions() {

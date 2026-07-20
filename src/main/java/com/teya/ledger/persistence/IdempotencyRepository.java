@@ -6,7 +6,6 @@ import java.util.Optional;
 import java.util.UUID;
 
 public interface IdempotencyRepository {
-    Optional<IdempotencyDataModel> findByKey(UUID idempotencyKey);
-
+    Optional<IdempotencyDataModel> reserve(UUID idempotencyKey, IdempotencyDataModel placeholderRequest);
     void save(UUID idempotencyKey, IdempotencyDataModel request);
 }
